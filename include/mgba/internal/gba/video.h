@@ -237,6 +237,8 @@ void GBAVideoDeinit(struct GBAVideo* video);
 
 void GBAVideoDummyRendererCreate(struct GBAVideoRenderer*);
 void GBAVideoAssociateRenderer(struct GBAVideo* video, struct GBAVideoRenderer* renderer);
+/* Switch renderers without deinitializing GL objects from a dead context. */
+void GBAVideoAssociateRendererAfterContextLoss(struct GBAVideo* video, struct GBAVideoRenderer* renderer);
 
 void GBAVideoWriteDISPSTAT(struct GBAVideo* video, uint16_t value);
 

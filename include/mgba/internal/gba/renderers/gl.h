@@ -18,7 +18,9 @@ CXX_GUARD_START
 
 #ifdef BUILD_GLES3
 
-#ifdef USE_EPOXY
+#ifdef LIBRETRO_OPENGL
+#include <mgba/internal/gba/renderers/gl-dispatch.h>
+#elif defined(USE_EPOXY)
 #include <epoxy/gl.h>
 #elif defined(__APPLE__)
 #include <OpenGL/gl3.h>

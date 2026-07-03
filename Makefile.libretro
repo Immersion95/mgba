@@ -1,5 +1,20 @@
 DEBUG = 0
 HAVE_VFS_FD := 1
+
+ifeq ($(origin HAVE_OPENGL),undefined)
+ifneq (,$(filter win windows_x86 windows_x86_64 mingw_x86 mingw_x86_64,$(platform)))
+HAVE_OPENGL := 1
+else ifeq ($(platform),)
+ifeq ($(OS),Windows_NT)
+HAVE_OPENGL := 1
+else
+HAVE_OPENGL := 0
+endif
+else
+HAVE_OPENGL := 0
+endif
+endif
+
 CORE_DIR := .
 BUILD_DIR := libretro-build
 

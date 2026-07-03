@@ -208,6 +208,50 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "OFF"
    },
 #endif
+#ifdef LIBRETRO_OPENGL
+   {
+      "mgba_renderer",
+      "Renderer (Restart)",
+      NULL,
+      "Selects the software renderer or the OpenGL high-resolution renderer. OpenGL is available for Game Boy Advance content only and requires an OpenGL 3.3-compatible frontend video driver.",
+      NULL,
+      "video",
+      {
+         { "software", "Software" },
+         { "opengl",   "OpenGL (High Resolution)" },
+         { NULL, NULL },
+      },
+      "software"
+   },
+   {
+      "mgba_opengl_scale",
+      "OpenGL Internal Resolution (Restart)",
+      NULL,
+      "Sets the internal resolution multiplier used by mGBA's OpenGL renderer. Native GBA resolution is 240x160.",
+      NULL,
+      "video",
+      {
+         { "1",  "1x (240x160)" },
+         { "2",  "2x (480x320)" },
+         { "3",  "3x (720x480)" },
+         { "4",  "4x (960x640)" },
+         { "5",  "5x (1200x800)" },
+         { "6",  "6x (1440x960)" },
+         { "7",  "7x (1680x1120)" },
+         { "8",  "8x (1920x1280)" },
+         { "9",  "9x (2160x1440)" },
+         { "10", "10x (2400x1600)" },
+         { "11", "11x (2640x1760)" },
+         { "12", "12x (2880x1920)" },
+         { "13", "13x (3120x2080)" },
+         { "14", "14x (3360x2240)" },
+         { "15", "15x (3600x2400)" },
+         { "16", "16x (3840x2560)" },
+         { NULL, NULL },
+      },
+      "1"
+   },
+#endif
    {
       "mgba_audio_low_pass_filter",
       "Audio Filter",

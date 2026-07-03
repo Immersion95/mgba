@@ -553,6 +553,39 @@ static void _GBACoreSetVideoGLTex(struct mCore* core, unsigned texid) {
 #endif
 }
 
+void GBACoreInvalidateVideoGLContext(struct mCore* core) {
+#ifdef BUILD_GLES3
+	struct GBACore* gbacore;
+	struct GBA* gba;
+	struct GBAVideoRenderer* fallback;
+
+	if (!core) {
+		return;
+	}
+	gbacore = (struct GBACore*) core;
+	gba = core->board;
+	if (!gba || gba->video.renderer != &gbacore->glRenderer.d) {
+		return;
+	}
+
+	if (gbacore->glRenderer.temporaryBuffer) {
+		mappedMemoryFree(gbacore->glRenderer.temporaryBuffer,
+			GBA_VIDEO_HORIZONTAL_PIXELS * GBA_VIDEO_VERTICAL_PIXELS *
+			gbacore->glRenderer.scale * gbacore->glRenderer.scale * BYTES_PER_PIXEL);
+		gbacore->glRenderer.temporaryBuffer = NULL;
+	}
+
+	fallback = gbacore->renderer.outputBuffer
+		? &gbacore->renderer.d
+		: &gbacore->dummyRenderer;
+	GBAVideoAssociateRendererAfterContextLoss(&gba->video, fallback);
+	GBAVideoGLRendererCreate(&gbacore->glRenderer);
+	gbacore->glRenderer.outputTex = (unsigned) -1;
+#else
+	UNUSED(core);
+#endif
+}
+
 static void _GBACoreGetPixels(struct mCore* core, const void** buffer, size_t* stride) {
 	struct GBA* gba = core->board;
 	gba->video.renderer->getPixels(gba->video.renderer, stride, buffer);
