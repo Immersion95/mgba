@@ -114,9 +114,11 @@ void GBAVideoDummyRendererCreate(struct GBAVideoRenderer* renderer) {
 	memcpy(renderer, &dummyRenderer, sizeof(*renderer));
 }
 
-void GBAVideoAssociateRenderer(struct GBAVideo* video, struct GBAVideoRenderer* renderer) {
+static void _GBAVideoAssociateRenderer(struct GBAVideo* video, struct GBAVideoRenderer* renderer, bool deinitPrevious) {
 	if (video->renderer) {
-		video->renderer->deinit(video->renderer);
+		if (deinitPrevious) {
+			video->renderer->deinit(video->renderer);
+		}
 		renderer->cache = video->renderer->cache;
 	} else {
 		renderer->cache = NULL;
@@ -136,6 +138,14 @@ void GBAVideoAssociateRenderer(struct GBAVideo* video, struct GBAVideoRenderer* 
 		}
 		renderer->writeVideoRegister(renderer, address, video->p->memory.io[address >> 1]);
 	}
+}
+
+void GBAVideoAssociateRenderer(struct GBAVideo* video, struct GBAVideoRenderer* renderer) {
+	_GBAVideoAssociateRenderer(video, renderer, true);
+}
+
+void GBAVideoAssociateRendererAfterContextLoss(struct GBAVideo* video, struct GBAVideoRenderer* renderer) {
+	_GBAVideoAssociateRenderer(video, renderer, false);
 }
 
 void _startHdraw(struct mTiming* timing, void* context, uint32_t cyclesLate) {

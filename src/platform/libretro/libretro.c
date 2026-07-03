@@ -28,6 +28,10 @@
 #include <mgba-util/memory.h>
 #include <mgba-util/vfs.h>
 
+#ifdef LIBRETRO_OPENGL
+#include "libretro_video_gl.h"
+#endif
+
 #ifndef __LIBRETRO__
 #error "Can't compile the libretro core as anything other than libretro."
 #endif
@@ -560,6 +564,27 @@ enum frame_blend_method
 
 static enum frame_blend_method frameBlendType = FRAME_BLEND_NONE;
 static bool frameBlendEnabled                 = false;
+#if defined(LIBRETRO_OPENGL) && defined(COLOR_16_BIT) && defined(COLOR_5_6_5)
+static enum mLibretroVideoGLFrameBlend _libretroVideoGLFrameBlend(void) {
+	if (!frameBlendEnabled) {
+		return mLIBRETRO_VIDEO_GL_FRAME_BLEND_NONE;
+	}
+
+	switch (frameBlendType) {
+	case FRAME_BLEND_MIX:
+		return mLIBRETRO_VIDEO_GL_FRAME_BLEND_MIX;
+	case FRAME_BLEND_MIX_SMART:
+		return mLIBRETRO_VIDEO_GL_FRAME_BLEND_MIX_SMART;
+	case FRAME_BLEND_LCD_GHOSTING:
+		return mLIBRETRO_VIDEO_GL_FRAME_BLEND_LCD_GHOSTING;
+	case FRAME_BLEND_LCD_GHOSTING_FAST:
+		return mLIBRETRO_VIDEO_GL_FRAME_BLEND_LCD_GHOSTING_FAST;
+	case FRAME_BLEND_NONE:
+	default:
+		return mLIBRETRO_VIDEO_GL_FRAME_BLEND_NONE;
+	}
+}
+#endif
 static mColor* outputBufferPrev1              = NULL;
 static mColor* outputBufferPrev2              = NULL;
 static mColor* outputBufferPrev3              = NULL;
@@ -1355,15 +1380,21 @@ void retro_get_system_info(struct retro_system_info* info) {
 
 void retro_get_system_av_info(struct retro_system_av_info* info) {
 	unsigned width, height;
+	unsigned maxWidth, maxHeight;
+
 	core->currentVideoSize(core, &width, &height);
+	core->baseVideoSize(core, &maxWidth, &maxHeight);
+#ifdef LIBRETRO_OPENGL
+	if (mLibretroVideoGLGetSize(core, &width, &height)) {
+		maxWidth = width;
+		maxHeight = height;
+	}
+#endif
 	info->geometry.base_width = width;
 	info->geometry.base_height = height;
-
-	core->baseVideoSize(core, &width, &height);
-	info->geometry.max_width = width;
-	info->geometry.max_height = height;
-
-	info->geometry.aspect_ratio = width / (double) height;
+	info->geometry.max_width = maxWidth;
+	info->geometry.max_height = maxHeight;
+	info->geometry.aspect_ratio = maxWidth / (double) maxHeight;
 	info->timing.fps = core->frequency(core) / (float) core->frameCycles(core);
 
 #ifdef M_CORE_GBA
@@ -1473,9 +1504,15 @@ void retro_init(void) {
 	retroAudioLatency       = 0;
 	updateAudioLatency      = false;
 	updateAudioRate         = false;
+#ifdef LIBRETRO_OPENGL
+	mLibretroVideoGLInit(environCallback, logCallback);
+#endif
 }
 
 void retro_deinit(void) {
+#ifdef LIBRETRO_OPENGL
+	mLibretroVideoGLDeinit();
+#endif
 	if (outputBuffer) {
 #ifdef _3DS
 		linearFree(outputBuffer);
@@ -1548,6 +1585,9 @@ int16_t cycleturbo(bool a, bool b, bool l, bool r) {
 }
 
 void retro_run(void) {
+#ifdef LIBRETRO_OPENGL
+	mLibretroVideoGLBeginFrame();
+#endif
 	if (deferredSetup) {
 		_doDeferredSetup();
 	}
@@ -1707,15 +1747,41 @@ void retro_run(void) {
 	}
 
 	if (!skipFrame) {
+#ifdef LIBRETRO_OPENGL
+		if (mLibretroVideoGLIsRequested()) {
+			const struct mLibretroVideoGLPostProcessing* postProcessing = NULL;
 #if defined(COLOR_16_BIT) && defined(COLOR_5_6_5)
-		if (videoPostProcess) {
-			videoPostProcess(width, height);
-			videoCallback(ppOutputBuffer, width, height, VIDEO_WIDTH_MAX * sizeof(mColor));
+			const struct mLibretroVideoGLPostProcessing settings = {
+				.colorCorrectionEnabled = colorCorrectionEnabled,
+				.colorCorrectionLut = (const uint16_t*) ccLUT,
+				.colorCorrectionType = ccType,
+				.frameBlend = _libretroVideoGLFrameBlend(),
+			};
+			postProcessing = &settings;
+#endif
+			if (mLibretroVideoGLPresent(width, height, postProcessing)) {
+				videoCallback(RETRO_HW_FRAME_BUFFER_VALID, width, height, 0);
+			} else {
+				videoCallback(NULL, width, height, 0);
+			}
 		} else
 #endif
-			videoCallback(outputBuffer, width, height, VIDEO_WIDTH_MAX * sizeof(mColor));
+		{
+#if defined(COLOR_16_BIT) && defined(COLOR_5_6_5)
+			if (videoPostProcess) {
+				videoPostProcess(width, height);
+				videoCallback(ppOutputBuffer, width, height, VIDEO_WIDTH_MAX * sizeof(mColor));
+			} else
+#endif
+				videoCallback(outputBuffer, width, height, VIDEO_WIDTH_MAX * sizeof(mColor));
+		}
 	} else {
+#ifdef LIBRETRO_OPENGL
+		videoCallback(NULL, width, height,
+			mLibretroVideoGLIsRequested() ? 0 : VIDEO_WIDTH_MAX * sizeof(mColor));
+#else
 		videoCallback(NULL, width, height, VIDEO_WIDTH_MAX * sizeof(mColor));
+#endif
 	}
 
 	/* Check whether audio sample rate has changed */
@@ -2085,6 +2151,11 @@ bool retro_load_game(const struct retro_game_info* game) {
 	memset(savedata, 0xFF, GBA_SIZE_FLASH1M);
 
 	_reloadSettings();
+#ifdef LIBRETRO_OPENGL
+	if (core->platform(core) == mPLATFORM_GBA) {
+		mLibretroVideoGLRequest(core);
+	}
+#endif
 	core->loadROM(core, rom);
 	deferredSetup = true;
 
@@ -2154,8 +2225,12 @@ void retro_unload_game(void) {
 	if (!core) {
 		return;
 	}
+#ifdef LIBRETRO_OPENGL
+	mLibretroVideoGLDeinit();
+#endif
 	mCoreConfigDeinit(&core->config);
 	core->deinit(core);
+	core = NULL;
 	mappedMemoryFree(data, dataSize);
 	data = 0;
 	mappedMemoryFree(savedata, GBA_SIZE_FLASH1M);

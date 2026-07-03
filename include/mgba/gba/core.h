@@ -12,6 +12,8 @@ CXX_GUARD_START
 
 struct mCore;
 struct mCore* GBACoreCreate(void);
+/* Detach the GL renderer after its context has already been lost. */
+void GBACoreInvalidateVideoGLContext(struct mCore* core);
 #ifndef MINIMAL_CORE
 struct mCore* GBAVideoLogPlayerCreate(void);
 #endif
