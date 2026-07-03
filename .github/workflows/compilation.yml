@@ -1,36 +1,492 @@
-name: CI
-
+name: Libretro CI
 on:
   push:
   pull_request:
   repository_dispatch:
     types: [run_build]
+  workflow_dispatch:
+    inputs:
+      legacy_ios9:
+        description: Run the iOS armv7/iOS 9 build on a compatible self-hosted runner
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: libretro-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CORENAME: mgba
+  JNI_PATH: libretro-build
+  MAKEFILE: Makefile.libretro
 
 jobs:
-  build-ps2:
-    runs-on: ubuntu-latest
-    container: ps2dev/ps2dev:latest
+  desktop:
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x64
+            label: Windows x64 (MinGW)
+          - target: windows-i686
+            label: Windows i686 (MinGW)
+          - target: linux-x64
+            label: Linux x64
+          - target: linux-i686
+            label: Linux i686
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install dependencies
-      run: |
-        apk add build-base
+      - name: Install toolchain
+        env:
+          LIBRETRO_TARGET: ${{ matrix.target }}
+        run: |
+          set -Eeuo pipefail
+          packages=(build-essential)
+          case "$LIBRETRO_TARGET" in
+            windows-x64)
+              packages+=(gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64 binutils-mingw-w64-x86-64)
+              ;;
+            windows-i686)
+              packages+=(gcc-mingw-w64-i686 g++-mingw-w64-i686 binutils-mingw-w64-i686)
+              ;;
+            linux-i686)
+              packages+=(gcc-multilib g++-multilib)
+              ;;
+          esac
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y "${packages[@]}"
 
-    - name: Get Information Variables
-      id: core
-      run: |
-        echo "::set-output name=info::$(echo mgba)"
-        echo "::set-output name=platform::$(echo ps2)"
-        echo "::set-output name=sha8::$(echo ${GITHUB_SHA} | cut -c1-8)"
+      - name: Build
+        env:
+          LIBRETRO_TARGET: ${{ matrix.target }}
+        run: |
+          set -Eeuo pipefail
+          out="artifacts/$LIBRETRO_TARGET"
+          rm -rf "$out"
+          mkdir -p "$out"
 
-    - name: Compile project
-      run: |
-        make platform=${{ steps.core.outputs.platform }} clean all
+          case "$LIBRETRO_TARGET" in
+            windows-x64)
+              make -f "$MAKEFILE" -j"$(nproc)" platform=win \
+                CC=x86_64-w64-mingw32-gcc \
+                CXX=x86_64-w64-mingw32-g++ \
+                AR=x86_64-w64-mingw32-ar
+              output="${CORENAME}_libretro.dll"
+              ;;
+            windows-i686)
+              make -f "$MAKEFILE" -j"$(nproc)" platform=win \
+                CC=i686-w64-mingw32-gcc \
+                CXX=i686-w64-mingw32-g++ \
+                AR=i686-w64-mingw32-ar
+              output="${CORENAME}_libretro.dll"
+              ;;
+            linux-x64)
+              make -f "$MAKEFILE" -j"$(nproc)" platform=unix
+              output="${CORENAME}_libretro.so"
+              ;;
+            linux-i686)
+              make -f "$MAKEFILE" -j"$(nproc)" platform=unix \
+                CC="gcc -m32" CXX="g++ -m32" AR=ar
+              output="${CORENAME}_libretro.so"
+              ;;
+          esac
 
-    - name: Upload artifacts
-      if: ${{ success() }}
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ steps.core.outputs.info }}_libretro_${{ steps.core.outputs.platform }}-${{ steps.core.outputs.sha8 }}
-        path: ${{ steps.core.outputs.info }}_libretro_${{ steps.core.outputs.platform }}.a
+          cp -f "$output" "$out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-${{ matrix.target }}
+          path: artifacts/${{ matrix.target }}/
+          if-no-files-found: error
+
+  linux-aarch64:
+    name: Linux aarch64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross-toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu
+
+      - name: Build
+        run: |
+          set -Eeuo pipefail
+          rm -rf artifacts/linux-aarch64
+          mkdir -p artifacts/linux-aarch64
+          make -f "$MAKEFILE" -j"$(nproc)" platform=unix \
+            CC=aarch64-linux-gnu-gcc \
+            CXX=aarch64-linux-gnu-g++ \
+            AR=aarch64-linux-gnu-ar
+          cp -f "${CORENAME}_libretro.so" artifacts/linux-aarch64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-linux-aarch64
+          path: artifacts/linux-aarch64/
+          if-no-files-found: error
+
+  desktop-macos:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: osx-x64
+            label: macOS x64
+            runner: macos-15-intel
+            deployment_target: '10.7'
+          - target: osx-arm64
+            label: macOS arm64
+            runner: macos-15
+            deployment_target: '11.0'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          LIBRETRO_TARGET: ${{ matrix.target }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target }}
+          CODE_DEFINES: -DHAVE_LOCALE
+        run: |
+          set -Eeuo pipefail
+          out="artifacts/$LIBRETRO_TARGET"
+          rm -rf "$out"
+          mkdir -p "$out"
+          make -f "$MAKEFILE" -j"$(sysctl -n hw.logicalcpu)" platform=osx
+          cp -f "${CORENAME}_libretro.dylib" "$out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-${{ matrix.target }}
+          path: artifacts/${{ matrix.target }}/
+          if-no-files-found: error
+
+  android:
+    name: Android ${{ matrix.abi }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: android-armeabi-v7a
+            abi: armeabi-v7a
+          - target: android-arm64-v8a
+            abi: arm64-v8a
+          - target: android-x86_64
+            abi: x86_64
+          - target: android-x86
+            abi: x86
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          LIBRETRO_TARGET: ${{ matrix.target }}
+          ANDROID_ABI: ${{ matrix.abi }}
+        run: |
+          set -Eeuo pipefail
+
+          ndk_root="${ANDROID_NDK_HOME:-${ANDROID_NDK_LATEST_HOME:-}}"
+          if [ -z "$ndk_root" ] || [ ! -x "$ndk_root/ndk-build" ]; then
+            ndk_root="$(find "$ANDROID_SDK_ROOT/ndk" -mindepth 1 -maxdepth 1 -type d -print0 \
+              | sort -zV | tail -z -n1 | tr -d '\0')"
+          fi
+          if [ -z "$ndk_root" ] || [ ! -x "$ndk_root/ndk-build" ]; then
+            echo "Android NDK was not found" >&2
+            exit 1
+          fi
+
+          out="artifacts/$LIBRETRO_TARGET"
+          project_root="$GITHUB_WORKSPACE/$JNI_PATH"
+          rm -rf "$out" "$project_root/libs" "$project_root/obj"
+          mkdir -p "$out"
+
+          "$ndk_root/ndk-build" \
+            NDK_PROJECT_PATH="$project_root" \
+            NDK_APPLICATION_MK="$project_root/jni/Application.mk" \
+            APP_ABI="$ANDROID_ABI" \
+            -j"$(nproc)"
+
+          cp -f "$project_root/libs/$ANDROID_ABI/libretro.so" \
+            "$out/${CORENAME}_libretro_android.so"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-${{ matrix.target }}
+          path: artifacts/${{ matrix.target }}/
+          if-no-files-found: error
+
+  apple-mobile:
+    name: ${{ matrix.label }}
+    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: ios-arm64
+            label: iOS arm64
+            platform: ios-arm64
+            output: mgba_libretro_ios.dylib
+          - target: tvos-arm64
+            label: tvOS arm64
+            platform: tvos-arm64
+            output: mgba_libretro_tvos.dylib
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          LIBRETRO_TARGET: ${{ matrix.target }}
+          LIBRETRO_PLATFORM: ${{ matrix.platform }}
+          LIBRETRO_OUTPUT: ${{ matrix.output }}
+          CODE_DEFINES: -DHAVE_LOCALE
+        run: |
+          set -Eeuo pipefail
+          out="artifacts/$LIBRETRO_TARGET"
+          rm -rf "$out"
+          mkdir -p "$out"
+          make -f "$MAKEFILE" -j"$(sysctl -n hw.logicalcpu)" \
+            platform="$LIBRETRO_PLATFORM"
+          cp -f "$LIBRETRO_OUTPUT" "$out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-${{ matrix.target }}
+          path: artifacts/${{ matrix.target }}/
+          if-no-files-found: error
+
+  legacy-ios9:
+    name: iOS 9 armv7
+    if: github.event_name == 'workflow_dispatch' && inputs.legacy_ios9 == true
+    runs-on: [self-hosted, macOS, X64, libretro-ios9]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          set -Eeuo pipefail
+          rm -rf artifacts/ios9
+          mkdir -p artifacts/ios9
+          make -f "$MAKEFILE" -j"$(sysctl -n hw.logicalcpu)" platform=ios9
+          cp -f "${CORENAME}_libretro_ios.dylib" artifacts/ios9/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-ios9
+          path: artifacts/ios9/
+          if-no-files-found: error
+
+  consoles:
+    name: ${{ matrix.label }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: psp
+            label: PlayStation Portable
+            image: reallibretroretroarch/libretro-build-psp:latest
+          - target: vita
+            label: PlayStation Vita
+            image: vitasdk/vitasdk:latest
+          - target: ps2
+            label: PlayStation 2
+            image: ps2dev/ps2dev:latest
+          - target: ctr
+            label: Nintendo 3DS
+            image: devkitpro/devkitarm:latest
+          - target: ngc
+            label: Nintendo GameCube
+            image: devkitpro/devkitppc:latest
+          - target: wii
+            label: Nintendo Wii
+            image: devkitpro/devkitppc:latest
+          - target: wiiu
+            label: Nintendo Wii U
+            image: devkitpro/devkitppc:latest
+          - target: libnx-aarch64
+            label: Nintendo Switch
+            image: devkitpro/devkita64:latest
+          - target: dingux-mips32
+            label: OpenDingux MIPS32
+            image: reallibretroretroarch/libretro-build-dingux:latest
+          - target: dingux-odbeta-mips32
+            label: OpenDingux Beta MIPS32
+            image: reallibretroretroarch/libretro-build-dingux:odbeta
+          - target: miyoo-arm32
+            label: Miyoo ARM32
+            image: reallibretroretroarch/libretro-build-dingux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        env:
+          LIBRETRO_TARGET: ${{ matrix.target }}
+          BUILD_IMAGE: ${{ matrix.image }}
+        run: |
+          set -Eeuo pipefail
+          docker pull "$BUILD_IMAGE"
+          docker run --rm \
+            --user 0:0 \
+            -e CORENAME \
+            -e MAKEFILE \
+            -e LIBRETRO_TARGET \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            "$BUILD_IMAGE" \
+            /bin/sh -lc '
+              set -eu
+              git config --global --add safe.directory /work 2>/dev/null || true
+              jobs="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
+              out="artifacts/$LIBRETRO_TARGET"
+              rm -rf "$out"
+              mkdir -p "$out"
+
+              case "$LIBRETRO_TARGET" in
+                psp)
+                  make -f "$MAKEFILE" -j"$jobs" platform=psp1
+                  output="${CORENAME}_libretro_psp1.a"
+                  ;;
+                vita)
+                  make -f "$MAKEFILE" -j"$jobs" platform=vita \
+                    CODE_DEFINES="-D_GNU_SOURCE -DHAVE_LOCALE"
+                  output="${CORENAME}_libretro_vita.a"
+                  ;;
+                ps2)
+                  apk add --no-cache make
+                  export PS2DEV="${PS2DEV:-/usr/local/ps2dev}"
+                  export PS2SDK="${PS2SDK:-$PS2DEV/ps2sdk}"
+                  export PATH="$PS2DEV/bin:$PS2DEV/ee/bin:$PS2DEV/iop/bin:$PS2DEV/dvp/bin:$PS2SDK/bin:$PATH"
+                  command -v mips64r5900el-ps2-elf-gcc
+                  command -v mips64r5900el-ps2-elf-ar
+                  make -f "$MAKEFILE" -j"$jobs" platform=ps2
+                  output="${CORENAME}_libretro_ps2.a"
+                  ;;
+                ctr)
+                  export CTRULIB="${CTRULIB:-$DEVKITPRO/libctru}"
+                  make -f "$MAKEFILE" -j"$jobs" platform=ctr
+                  output="${CORENAME}_libretro_ctr.a"
+                  ;;
+                ngc)
+                  make -f "$MAKEFILE" -j"$jobs" platform=ngc
+                  output="${CORENAME}_libretro_ngc.a"
+                  ;;
+                wii)
+                  make -f "$MAKEFILE" -j"$jobs" platform=wii
+                  output="${CORENAME}_libretro_wii.a"
+                  ;;
+                wiiu)
+                  make -f "$MAKEFILE" -j"$jobs" platform=wiiu \
+                    PLATFORM_DEFINES="-DGEKKO -mcpu=750 -meabi -mhard-float -DHAVE_STRTOF_L -U__INT32_TYPE__ -U__UINT32_TYPE__ -D__INT32_TYPE__=int -D_GNU_SOURCE -DWIIU -DHW_RVL -ffunction-sections -fdata-sections -D__wiiu__ -D__wut__ -DHAVE_LOCALE"
+                  output="${CORENAME}_libretro_wiiu.a"
+                  ;;
+                libnx-aarch64)
+                  export LIBNX="${LIBNX:-$DEVKITPRO/libnx}"
+                  make -f "$MAKEFILE" -j"$jobs" platform=libnx
+                  output="${CORENAME}_libretro_libnx.a"
+                  ;;
+                dingux-mips32)
+                  make -f "$MAKEFILE" -j"$jobs" platform=gcw0
+                  output="${CORENAME}_libretro.so"
+                  ;;
+                dingux-odbeta-mips32)
+                  prefix=/opt/gcw0-toolchain/usr/bin/mipsel-gcw0-linux-uclibc
+                  make -f "$MAKEFILE" -j"$jobs" platform=gcw0 \
+                    CC="${prefix}-gcc" AR="${prefix}-ar"
+                  output="${CORENAME}_libretro.so"
+                  ;;
+                miyoo-arm32)
+                  make -f "$MAKEFILE" -j"$jobs" platform=miyoo
+                  output="${CORENAME}_libretro.so"
+                  ;;
+                *)
+                  echo "Unsupported console target: $LIBRETRO_TARGET" >&2
+                  exit 2
+                  ;;
+              esac
+
+              cp -f "$output" "$out/"
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-${{ matrix.target }}
+          path: artifacts/${{ matrix.target }}/
+          if-no-files-found: error
+
+  emscripten:
+    name: Emscripten
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          set -Eeuo pipefail
+          docker pull emscripten/emsdk:latest
+          docker run --rm \
+            --user 0:0 \
+            -e CORENAME \
+            -e MAKEFILE \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            emscripten/emsdk:latest \
+            /bin/bash -lc '
+              set -Eeuo pipefail
+              rm -rf artifacts/emscripten
+              mkdir -p artifacts/emscripten
+              emmake make -f "$MAKEFILE" -j"$(nproc)" platform=emscripten
+              cp -f "${CORENAME}_libretro_emscripten.bc" artifacts/emscripten/
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-emscripten
+          path: artifacts/emscripten/
+          if-no-files-found: error
+
+  webos-armv7a:
+    name: webOS ARMv7a
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download webOS SDK
+        run: |
+          set -Eeuo pipefail
+          curl --fail --location --retry 5 --retry-delay 2 \
+            --output /tmp/arm-webos-linux-gnueabi_sdk-buildroot-x86_64.tar.gz \
+            https://github.com/openlgtv/buildroot-nc4/releases/latest/download/arm-webos-linux-gnueabi_sdk-buildroot-x86_64.tar.gz
+          tar -xzf /tmp/arm-webos-linux-gnueabi_sdk-buildroot-x86_64.tar.gz -C /tmp
+          /tmp/arm-webos-linux-gnueabi_sdk-buildroot/relocate-sdk.sh
+
+      - name: Build
+        shell: bash
+        run: |
+          set -Ee -o pipefail
+          source /tmp/arm-webos-linux-gnueabi_sdk-buildroot/environment-setup
+          export SDK_PATH=/tmp/arm-webos-linux-gnueabi_sdk-buildroot
+
+          rm -rf artifacts/webos-armv7a
+          mkdir -p artifacts/webos-armv7a
+          make -f "$MAKEFILE" -j"$(nproc)" platform=unix
+          cp -f "${CORENAME}_libretro.so" artifacts/webos-armv7a/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: libretro-webos-armv7a
+          path: artifacts/webos-armv7a/
+          if-no-files-found: error
